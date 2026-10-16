@@ -1,0 +1,341 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ahmedabad City Division - Data Search</title>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: #f4f6f9;
+    color: #222;
+  }
+  .container {
+    max-width: 1400px;
+    margin: auto;
+    background: white;
+    padding: 22px;
+    border-radius: 10px;
+    box-shadow: 0 2px 12px #00000012;
+  }
+  h1 { font-size: 25px; margin: 0 0 8px; }
+  .subheading { color: #666; margin-bottom: 20px; }
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+    margin-bottom: 15px;
+  }
+  input, select, button {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 14px;
+    background: white;
+  }
+  button {
+    cursor: pointer;
+    background: #174a8b;
+    color: white;
+    border: none;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  .summary {
+    margin: 12px 0;
+    font-size: 14px;
+    color: #444;
+  }
+  .table-wrap { overflow: auto; max-height: 65vh; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 9px;
+    text-align: left;
+  }
+  th {
+    background: #174a8b;
+    color: white;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    cursor: pointer;
+  }
+  tbody tr:nth-child(even) { background: #f5f8fc; }
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 15px;
+  }
+  .pagination button { max-width: 130px; }
+  .pagination select { max-width: 100px; }
+  #status { margin: 12px 0; color: #555; }
+  @media (max-width: 600px) {
+    body { padding: 8px; }
+    .container { padding: 12px; }
+    .pagination { flex-wrap: wrap; }
+  }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>Ahmedabad City Division</h1>
+  <div class="subheading">Excel Data Search and Monitoring Portal</div>
+
+  <div class="controls">
+    <input id="search" type="search"
+           placeholder="Search all columns..." disabled>
+
+    <select id="filterColumn" disabled>
+      <option value="">Select filter column</option>
+    </select>
+
+    <input id="filterValue" type="search"
+           placeholder="Enter filter value..." disabled>
+
+    <select id="pageSize" aria-label="Rows per page">
+      <option value="25">25 rows</option>
+      <option value="50" selected>50 rows</option>
+      <option value="100">100 rows</option>
+      <option value="250">250 rows</option>
+    </select>
+
+    <button id="reset" type="button" disabled>Reset Filters</button>
+  </div>
+
+  <div id="status" role="status">Loading data...</div>
+  <div class="summary" id="summary"></div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr id="headRow"></tr></thead>
+      <tbody id="dataBody"></tbody>
+    </table>
+  </div>
+
+  <div class="pagination">
+    <button id="previous" disabled>Previous</button>
+    <span id="pageInfo">Page 0 of 0</span>
+    <button id="next" disabled>Next</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const DATA_URL = "./data.csv";
+
+  let headers = [];
+  let allRows = [];
+  let filteredRows = [];
+  let page = 1;
+  let sortColumn = "";
+  let sortDirection = 1;
+
+  const $ = id => document.getElementById(id);
+
+  function setStatus(message) {
+    $("status").textContent = message;
+  }
+
+  function cellText(value) {
+    return value == null ? "" : String(value);
+  }
+
+  function makeCell(tag, value) {
+    const el = document.createElement(tag);
+    // Use textContent, not innerHTML, for spreadsheet data.
+    el.textContent = cellText(value);
+    return el;
+  }
+
+  function renderHeaders() {
+    const row = $("headRow");
+    row.replaceChildren();
+
+    headers.forEach(header => {
+      const th = makeCell("th", header);
+      th.scope = "col";
+      th.title = "Click to sort";
+      th.addEventListener("click", () => {
+        if (sortColumn === header) {
+          sortDirection *= -1;
+        } else {
+          sortColumn = header;
+          sortDirection = 1;
+        }
+        applyFilters();
+      });
+      row.appendChild(th);
+    });
+  }
+
+  function renderTable() {
+    const size = Number($("pageSize").value);
+    const total = filteredRows.length;
+    const totalPages = Math.ceil(total / size);
+    page = totalPages ? Math.min(page, totalPages) : 1;
+
+    const start = (page - 1) * size;
+    const visible = filteredRows.slice(start, start + size);
+    const body = $("dataBody");
+    const fragment = document.createDocumentFragment();
+
+    visible.forEach(record => {
+      const tr = document.createElement("tr");
+      headers.forEach(header => {
+        tr.appendChild(makeCell("td", record[header]));
+      });
+      fragment.appendChild(tr);
+    });
+
+    body.replaceChildren(fragment);
+
+    $("summary").textContent =
+      `Showing ${total ? start + 1 : 0}–${Math.min(start + size, total)} ` +
+      `of ${total.toLocaleString()} matching records ` +
+      `(${allRows.length.toLocaleString()} total).`;
+
+    $("pageInfo").textContent =
+      `Page ${totalPages ? page : 0} of ${totalPages}`;
+
+    $("previous").disabled = page <= 1;
+    $("next").disabled = page >= totalPages;
+  }
+
+  function applyFilters() {
+    const search = $("search").value.trim().toLocaleLowerCase();
+    const column = $("filterColumn").value;
+    const value = $("filterValue").value.trim().toLocaleLowerCase();
+
+    filteredRows = allRows.filter(record => {
+      const matchesSearch = !search || headers.some(header =>
+        cellText(record[header]).toLocaleLowerCase().includes(search)
+      );
+
+      const matchesColumn = !column || !value ||
+        cellText(record[column]).toLocaleLowerCase().includes(value);
+
+      return matchesSearch && matchesColumn;
+    });
+
+    if (sortColumn) {
+      filteredRows.sort((a, b) =>
+        cellText(a[sortColumn]).localeCompare(
+          cellText(b[sortColumn]), undefined,
+          { numeric: true, sensitivity: "base" }
+        ) * sortDirection
+      );
+    }
+
+    page = 1;
+    renderTable();
+  }
+
+  async function loadData() {
+    try {
+      // Avoid a cached copy when the page is reopened.
+      const response = await fetch(
+        DATA_URL + "?v=" + Date.now(),
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+
+      const csv = await response.text();
+
+      const result = Papa.parse(csv, {
+        header: true,
+        skipEmptyLines: "greedy",
+        transformHeader: h => h.trim()
+      });
+
+      if (result.errors.length) {
+        console.warn("CSV parsing warnings:", result.errors.slice(0, 10));
+      }
+
+      headers = result.meta.fields || [];
+      allRows = result.data.filter(record =>
+        headers.some(header => cellText(record[header]).trim() !== "")
+      );
+
+      if (!headers.length) {
+        throw new Error("No column headings found in data.csv");
+      }
+
+      renderHeaders();
+
+      headers.forEach(header => {
+        const option = document.createElement("option");
+        option.value = header;
+        option.textContent = header;
+        $("filterColumn").appendChild(option);
+      });
+
+      ["search", "filterColumn", "filterValue", "reset"]
+        .forEach(id => $(id).disabled = false);
+
+      applyFilters();
+      setStatus(`Data loaded successfully. ${allRows.length.toLocaleString()} records.`);
+    } catch (error) {
+      console.error(error);
+      setStatus(
+        "Could not load data.csv. Check that the file exists in the repository " +
+        "and GitHub Pages has published the latest version. " + error.message
+      );
+    }
+  }
+
+  $("search").addEventListener("input", applyFilters);
+  $("filterColumn").addEventListener("change", applyFilters);
+  $("filterValue").addEventListener("input", applyFilters);
+  $("pageSize").addEventListener("change", () => {
+    page = 1;
+    renderTable();
+  });
+
+  $("reset").addEventListener("click", () => {
+    $("search").value = "";
+    $("filterColumn").value = "";
+    $("filterValue").value = "";
+    sortColumn = "";
+    sortDirection = 1;
+    applyFilters();
+  });
+
+  $("previous").addEventListener("click", () => {
+    if (page > 1) {
+      page--;
+      renderTable();
+    }
+  });
+
+  $("next").addEventListener("click", () => {
+    const pages = Math.ceil(filteredRows.length / Number($("pageSize").value));
+    if (page < pages) {
+      page++;
+      renderTable();
+    }
+  });
+
+  loadData();
+})();
+</script>
+</body>
+</html>
